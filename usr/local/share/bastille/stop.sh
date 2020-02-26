@@ -67,8 +67,9 @@ for _jail in ${JAILS}; do
     ## test if running
     if [ "$(jls name | awk "/^${_jail}$/")" ]; then
         ## remove ip4.addr from firewall table:jails
-        if [ -n "${bastille_jail_loopback}" ]; then
-            pfctl -q -t jails -T delete "$(jls -j "${_jail}" ip4.addr)"
+        ip=$(jls -s -j "${_jail}" ip4.addr)
+        if [ -n "${bastille_jail_loopback}" ] && [ -n "${ip}" ]; then
+            pfctl -q -t jails -T delete ${ip}
         fi
 
         ## remove rctl limits

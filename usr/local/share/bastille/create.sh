@@ -32,7 +32,7 @@
 . /usr/local/etc/bastille/bastille.conf
 
 usage() {
-    echo -e "${COLOR_RED}Usage: bastille create [option] name release ip [interface].${COLOR_RESET}"
+    echo -e "${COLOR_RED}Usage: bastille create [option] name release ip [interface [gateway]].${COLOR_RESET}"
     exit 1
 }
 
@@ -82,6 +82,20 @@ validate_netif() {
     local LIST_INTERFACES=$(ifconfig -l)
     if echo "${LIST_INTERFACES} VNET" | grep -qwo "${INTERFACE}"; then
         echo -e "${COLOR_GREEN}Valid: (${INTERFACE}).${COLOR_RESET}"
+    elif [ -n "${VNET_JAIL}" ]; then
+        echo -e "${COLOR_GREEN}Valid: (Creating a virtual interface ${INTERFACE}).${COLOR_RESET}"
+        MASKLEN=${IP##*/}
+        if [ -z "${GATEWAY}" ]; then
+            echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+            exit 1
+        elif [ -z "${MASKLEN}" ]; then
+            echo -e "${COLOR_RED}Specify a MASKLEN for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+            exit 1
+        elif [ "${MASKLEN}" -le 0 ] || [ "${MASKLEN}" -ge 32 ]; then
+            echo -e "${COLOR_RED}Invalid: 0 < MASKLEN < 32 for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+            exit 1
+	fi
+	VNET_VIRTIF="1"
     else
         echo -e "${COLOR_RED}Invalid: (${INTERFACE}).${COLOR_RESET}"
         exit 1
@@ -89,6 +103,10 @@ validate_netif() {
 }
 
 validate_netconf() {
+    if [ -n "${VNET_JAIL}" ] && [ -z "${INTERFACE}" ]; then
+        echo -e "${COLOR_RED}Specify an external interface for a VNET jail.${COLOR_RESET}"
+        exit 1
+    fi
     if [ -n "${bastille_jail_loopback}" ] && [ -n "${bastille_jail_interface}" ] && [ -n "${bastille_jail_external}" ]; then
         echo -e "${COLOR_RED}Invalid network configuration.${COLOR_RESET}"
         exit 1
@@ -141,18 +159,12 @@ EOF
 }
 
 generate_vnet_jail_conf() {
-    ## determine number of containers + 1
-    ## iterate num and grep all jail configs
-    ## define uniq_epair
-    local list_jails_num=$(bastille list jails | wc -l | awk '{print $1}')
-    local num_range=$(expr "${list_jails_num}" + 1)
-    jail_list=$(bastille list jail)
-    for _num in $(seq 0 "${num_range}"); do
-        if ! grep -q "e0b_bastille${_num}" "${bastille_jailsdir}"/*/jail.conf > /dev/null 2>&1; then
-            uniq_epair="bastille${_num}"
-            break
-        fi
-    done
+    local vnetif="${INTERFACE}_${NAME}"
+
+    local jngopts=""
+    if [ -n "${VNET_VIRTIF}" ]; then
+        jngopts="-4 ${GATEWAY}/${MASKLEN}"
+    fi
 
     ## generate config
     cat << EOF > "${bastille_jail_conf}"
@@ -170,12 +182,12 @@ ${NAME} {
   securelevel = 2;
 
   vnet;
-  vnet.interface = e0b_${uniq_epair};
-  exec.prestart += "jib addm ${uniq_epair} ${INTERFACE}";
+  vnet.interface = "${vnetif}";
+  exec.prestart += "jngplus add ${jngopts} ${INTERFACE} ${vnetif}";
   # workaround
   # https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=238326
-  exec.prestop  += "ifconfig vnet0 -vnet ${NAME}";
-  exec.poststop += "jib destroy ${uniq_epair}";
+  exec.prestop  += "ifconfig ${vnetif} -vnet ${NAME}";
+  exec.poststop += "jngplus delete ${INTERFACE} ${vnetif}";
 }
 EOF
 }
@@ -337,22 +349,23 @@ create_jail() {
 
         ## VNET specific
         if [ -n "${VNET_JAIL}" ]; then
-            ## rename interface to generic vnet0
-            uniq_epair=$(grep vnet.interface "${bastille_jailsdir}/${NAME}/jail.conf" | awk '{print $3}' | sed 's/;//')
-            /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" "ifconfig_${uniq_epair}_name"=vnet0
-
             ## if 0.0.0.0 set SYNCDHCP
             ## else set static address
             if [ "${IP}" == "0.0.0.0" ]; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="SYNCDHCP"
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}="SYNCDHCP"
             else
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="inet ${IP}"
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}="inet ${IP}"
             fi
 
-            ## VNET requires jib script
-            if [ ! "$(command -v jib)" ]; then
-                if [ -f /usr/share/examples/jails/jib ] && [ ! -f /usr/local/bin/jib ]; then
-                    install -m 0544 /usr/share/examples/jails/jib /usr/local/bin/jib
+            ## Add default route if GATEWAY is specified
+            if [ -n "${GATEWAY}" ]; then
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" defaultrouter="${GATEWAY}"
+            fi
+
+	    ## VNET requires jngplus(vnet) script
+            if [ ! "$(command -v jngplus)" ]; then
+                if [ ! -f /usr/local/bin/jngplus ]; then
+                    install -m 0544 ${bastille_sharedir}/_vnet /usr/local/bin/jngplus
                 fi
             fi
         fi
@@ -382,6 +395,7 @@ fi
 ## reset this options
 THICK_JAIL=""
 VNET_JAIL=""
+VNET_VIRTIF=""
 
 ## handle combined options then shift
 if [ "${1}" = "-T" -o "${1}" = "--thick" -o "${1}" = "thick" ] && \
@@ -411,8 +425,10 @@ NAME="$1"
 RELEASE="$2"
 IP="$3"
 INTERFACE="$4"
+GATEWAY="$5"
+MASKLEN=""
 
-if [ $# -gt 4 ] || [ $# -lt 3 ]; then
+if [ $# -gt 5 ] || [ $# -lt 3 ]; then
     usage
 fi
 
