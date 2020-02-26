@@ -176,6 +176,9 @@ ${NAME} {
   vnet;
   vnet.interface = e0b_${uniq_epair};
   exec.prestart += "jib addm ${uniq_epair} ${INTERFACE}";
+  # workaround
+  # https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=238326
+  exec.prestop  += "ifconfig vnet0 -vnet ${NAME}";
   exec.poststop += "jib destroy ${uniq_epair}";
 }
 EOF
