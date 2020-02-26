@@ -341,10 +341,10 @@ create_jail() {
             uniq_epair=$(grep vnet.interface "${bastille_jailsdir}/${NAME}/jail.conf" | awk '{print $3}' | sed 's/;//')
             /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" "ifconfig_${uniq_epair}_name"=vnet0
 
-            ## if 0.0.0.0 set DHCP
+            ## if 0.0.0.0 set SYNCDHCP
             ## else set static address
             if [ "${IP}" == "0.0.0.0" ]; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="DHCP"
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="SYNCDHCP"
             else
                 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="inet ${IP}"
             fi
