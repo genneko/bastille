@@ -148,11 +148,9 @@ generate_vnet_jail_conf() {
     local num_range=$(expr "${list_jails_num}" + 1)
     jail_list=$(bastille list jail)
     for _num in $(seq 0 "${num_range}"); do
-        if [ -n "${jail_list}" ]; then
-            if ! grep -q "e0b_bastille${_num}" "${bastille_jailsdir}"/*/jail.conf; then
-                uniq_epair="bastille${_num}"
-                break
-            fi
+        if ! grep -q "e0b_bastille${_num}" "${bastille_jailsdir}"/*/jail.conf > /dev/null 2>&1; then
+            uniq_epair="bastille${_num}"
+            break
         fi
     done
 
