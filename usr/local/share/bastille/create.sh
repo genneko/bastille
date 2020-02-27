@@ -83,7 +83,7 @@ validate_netif() {
     if echo "${LIST_INTERFACES} VNET" | grep -qwo "${INTERFACE}"; then
         echo -e "${COLOR_GREEN}Valid: (${INTERFACE}).${COLOR_RESET}"
     elif [ -n "${VNET_JAIL}" ]; then
-        echo -e "${COLOR_GREEN}Valid: (Creating a virtual interface ${INTERFACE}).${COLOR_RESET}"
+        echo -e "${COLOR_GREEN}Valid: (Using a virtual interface ${INTERFACE}).${COLOR_RESET}"
         MASKLEN=${IP##*/}
         if [ -z "${GATEWAY}" ]; then
             echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${INTERFACE}).${COLOR_RESET}"
@@ -263,12 +263,15 @@ create_jail() {
     ## MAKE SURE WE'RE IN THE RIGHT PLACE
     cd "${bastille_jail_path}"
     echo
-    echo -e "${COLOR_GREEN}NAME: ${NAME}.${COLOR_RESET}"
-    echo -e "${COLOR_GREEN}IP: ${IP}.${COLOR_RESET}"
-    if [ -n  "${INTERFACE}" ]; then
-        echo -e "${COLOR_GREEN}INTERFACE: ${INTERFACE}.${COLOR_RESET}"
+    printf "${COLOR_GREEN}NAME: %s%s${COLOR_RESET}\n" "${NAME}" "${VNET_JAIL:+ (VNET)}"
+    printf "${COLOR_GREEN}IP: %s${COLOR_RESET}\n" "${IP}"
+    if [ -n  "${GATEWAY}" ]; then
+        printf "${COLOR_GREEN}GATEWAY: %s${COLOR_RESET}\n" "${GATEWAY}"
     fi
-    echo -e "${COLOR_GREEN}RELEASE: ${RELEASE}.${COLOR_RESET}"
+    if [ -n  "${INTERFACE}" ]; then
+        printf "${COLOR_GREEN}INTERFACE: %s%s${COLOR_RESET}\n" "${INTERFACE}" "${VNET_VIRTIF:+ (Host's virtual I/F: $GATEWAY/$MASKLEN)}"
+    fi
+    printf "${COLOR_GREEN}RELEASE: %s${COLOR_RESET}\n" "${RELEASE}"
     echo
 
     if [ -z "${THICK_JAIL}" ]; then
