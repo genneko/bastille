@@ -183,11 +183,11 @@ ${NAME} {
 
   vnet;
   vnet.interface = "${vnetif}";
-  exec.prestart += "jngplus add ${jngopts} ${INTERFACE} ${vnetif}";
+  exec.prestart += "${bastille_sharedir}/vnet add ${jngopts} ${INTERFACE} ${vnetif}";
   # workaround
   # https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=238326
   exec.prestop  += "ifconfig ${vnetif} -vnet ${NAME}";
-  exec.poststop += "jngplus delete ${INTERFACE} ${vnetif}";
+  exec.poststop += "${bastille_sharedir}/vnet delete ${INTERFACE} ${vnetif}";
 }
 EOF
 }
@@ -360,13 +360,6 @@ create_jail() {
             ## Add default route if GATEWAY is specified
             if [ -n "${GATEWAY}" ]; then
                 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" defaultrouter="${GATEWAY}"
-            fi
-
-	    ## VNET requires jngplus(vnet) script
-            if [ ! "$(command -v jngplus)" ]; then
-                if [ ! -f /usr/local/bin/jngplus ]; then
-                    install -m 0544 ${bastille_sharedir}/_vnet /usr/local/bin/jngplus
-                fi
             fi
         fi
     fi
