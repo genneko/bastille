@@ -91,11 +91,14 @@ validate_netif() {
         elif [ -z "${MASKLEN}" ]; then
             echo -e "${COLOR_RED}Specify a MASKLEN for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
             exit 1
-        elif [ "${MASKLEN}" -le 0 ] || [ "${MASKLEN}" -ge 32 ]; then
-            echo -e "${COLOR_RED}Invalid: 0 < MASKLEN < 32 for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+        elif [ "${IPX_ADDR}" == "ip4.addr" ] && [ "${MASKLEN}" -le 0 -o "${MASKLEN}" -ge 32 ]; then
+            echo -e "${COLOR_RED}Invalid: 0 < MASKLEN < 32 for the IPv4 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
             exit 1
-	fi
-	VNET_VIRTIF="1"
+        elif [ "${IPX_ADDR}" == "ip6.addr" ] && [ "${MASKLEN}" -ne 64 ]; then
+            echo -e "${COLOR_RED}Invalid: Specify /64 for the IPv6 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+            exit 1
+        fi
+        VNET_VIRTIF="1"
     else
         echo -e "${COLOR_RED}Invalid: (${INTERFACE}).${COLOR_RESET}"
         exit 1
@@ -163,7 +166,11 @@ generate_vnet_jail_conf() {
 
     local jngopts=""
     if [ -n "${VNET_VIRTIF}" ]; then
-        jngopts="-4 ${GATEWAY}/${MASKLEN}"
+        if [ "${IPX_ADDR}" == "ip4.addr" ]; then
+            jngopts="-4 ${GATEWAY}/${MASKLEN}"
+        elif [ "${IPX_ADDR}" == "ip6.addr" ]; then
+            jngopts="-6 ${GATEWAY}/${MASKLEN}"
+        fi
     fi
 
     ## generate config
@@ -352,12 +359,17 @@ create_jail() {
 
         ## VNET specific
         if [ -n "${VNET_JAIL}" ]; then
-            ## if 0.0.0.0 set SYNCDHCP
-            ## else set static address
+            ## if 0.0.0.0 set SYNCDHCP(IPv4)
+            ## else if :: use SLAAC(IPv6)
+            ## else set static IPv4 or IPv6 address
             if [ "${IP}" == "0.0.0.0" ]; then
                 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}="SYNCDHCP"
-            else
+            elif echo "${IP}" | grep -Eq '^[0:]+$' > /dev/null 2>&1; then
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}_ipv6="inet6 accept_rtadv"
+            elif [ "${IPX_ADDR}" == "ip4.addr" ]; then
                 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}="inet ${IP}"
+            elif [ "${IPX_ADDR}" == "ip6.addr" ]; then
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}_ipv6="inet6 ${IP}"
             fi
 
             ## Add default route if GATEWAY is specified
