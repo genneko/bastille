@@ -341,12 +341,17 @@ create_jail() {
             uniq_epair=$(grep vnet.interface "${bastille_jailsdir}/${NAME}/jail.conf" | awk '{print $3}' | sed 's/;//')
             /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" "ifconfig_${uniq_epair}_name"=vnet0
 
-            ## if 0.0.0.0 set SYNCDHCP
-            ## else set static address
+            ## if 0.0.0.0 set SYNCDHCP(IPv4)
+            ## else if :: use SLAAC(IPv6)
+            ## else set static IPv4 or IPv6 address
             if [ "${IP}" == "0.0.0.0" ]; then
                 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="SYNCDHCP"
-            else
+            elif echo "${IP}" | grep -Eq '^[0:]+$' > /dev/null 2>&1; then
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0_ipv6="inet6 accept_rtadv"
+            elif [ "${IPX_ADDR}" == "ip4.addr" ]; then
                 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0="inet ${IP}"
+            elif [ "${IPX_ADDR}" == "ip6.addr" ]; then
+                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_vnet0_ipv6="inet6 ${IP}"
             fi
 
             ## VNET requires jib script
