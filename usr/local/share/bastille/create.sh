@@ -83,24 +83,30 @@ validate_netif() {
     if echo "${LIST_INTERFACES} VNET" | grep -qwo "${INTERFACE}"; then
         echo -e "${COLOR_GREEN}Valid: (${INTERFACE}).${COLOR_RESET}"
     elif [ -n "${VNET_JAIL}" ]; then
-        echo -e "${COLOR_GREEN}Valid: (Using a virtual interface ${INTERFACE}).${COLOR_RESET}"
-        MASKLEN=${IP##*/}
-        if [ -z "${GATEWAY}" ]; then
-            echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-            exit 1
-        elif [ -z "${MASKLEN}" ]; then
-            echo -e "${COLOR_RED}Specify a MASKLEN for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-            exit 1
-        elif [ "${IPX_ADDR}" == "ip4.addr" ] && [ "${MASKLEN}" -le 0 -o "${MASKLEN}" -ge 32 ]; then
-            echo -e "${COLOR_RED}Invalid: 0 < MASKLEN < 32 for the IPv4 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-            exit 1
-        elif [ "${IPX_ADDR}" == "ip6.addr" ] && [ "${MASKLEN}" -ne 64 ]; then
-            echo -e "${COLOR_RED}Invalid: Specify /64 for the IPv6 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-            exit 1
-        fi
         VNET_VIRTIF="1"
+        if echo "$INTERFACE" | grep -Eq '^@.+' > /dev/null 2>&1; then
+            VNET_ISOLATED="1"
+            INTERFACE="${INTERFACE#@}"
+            echo -e "${COLOR_GREEN}Valid: (Connected to an internal bridge ${INTERFACE}br).${COLOR_RESET}"
+        else
+            echo -e "${COLOR_GREEN}Valid: (a virtual interface ${INTERFACE}).${COLOR_RESET}"
+            MASKLEN=${IP##*/}
+            if [ -z "${GATEWAY}" ]; then
+                echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+                exit 1
+            elif [ -z "${MASKLEN}" ]; then
+                echo -e "${COLOR_RED}Specify a MASKLEN for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+                exit 1
+            elif [ "${IPX_ADDR}" == "ip4.addr" ] && [ "${MASKLEN}" -le 0 -o "${MASKLEN}" -ge 32 ]; then
+                echo -e "${COLOR_RED}Invalid: 0 < MASKLEN < 32 for the IPv4 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+                exit 1
+            elif [ "${IPX_ADDR}" == "ip6.addr" ] && [ "${MASKLEN}" -ne 64 ]; then
+                echo -e "${COLOR_RED}Invalid: Specify /64 for the IPv6 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
+                exit 1
+            fi
+        fi
     else
-        echo -e "${COLOR_RED}Invalid: (${INTERFACE}).${COLOR_RESET}"
+        echo -e "${COLOR_RED}Invalid: (No such interface ${INTERFACE}).${COLOR_RESET}"
         exit 1
     fi
 }
@@ -164,12 +170,14 @@ EOF
 generate_vnet_jail_conf() {
     local vnetif="${INTERFACE}_${NAME}"
 
-    local jngopts=""
+    local vnetopts=""
     if [ -n "${VNET_VIRTIF}" ]; then
-        if [ "${IPX_ADDR}" == "ip4.addr" ]; then
-            jngopts="-4 ${GATEWAY}/${MASKLEN}"
+        if [ -n "${VNET_ISOLATED}" ]; then
+            vnetopts="-b"
+        elif [ "${IPX_ADDR}" == "ip4.addr" ]; then
+            vnetopts="-4 ${GATEWAY}/${MASKLEN}"
         elif [ "${IPX_ADDR}" == "ip6.addr" ]; then
-            jngopts="-6 ${GATEWAY}/${MASKLEN}"
+            vnetopts="-6 ${GATEWAY}/${MASKLEN}"
         fi
     fi
 
@@ -190,7 +198,7 @@ ${NAME} {
 
   vnet;
   vnet.interface = "${vnetif}";
-  exec.prestart += "${bastille_sharedir}/vnet add ${jngopts} ${INTERFACE} ${vnetif}";
+  exec.prestart += "${bastille_sharedir}/vnet add ${vnetopts} ${INTERFACE} ${vnetif}";
   # workaround
   # https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=238326
   exec.prestop  += "ifconfig ${vnetif} -vnet ${NAME}";
@@ -276,7 +284,11 @@ create_jail() {
         printf "${COLOR_GREEN}GATEWAY: %s${COLOR_RESET}\n" "${GATEWAY}"
     fi
     if [ -n  "${INTERFACE}" ]; then
-        printf "${COLOR_GREEN}INTERFACE: %s%s${COLOR_RESET}\n" "${INTERFACE}" "${VNET_VIRTIF:+ (Host's virtual I/F: $GATEWAY/$MASKLEN)}"
+        if [ -n "${VNET_ISOLATED}" ]; then
+            printf "${COLOR_GREEN}INTERNAL BRIDGE: %sbr${COLOR_RESET}\n" "${INTERFACE}"
+        else
+            printf "${COLOR_GREEN}INTERFACE: %s%s${COLOR_RESET}\n" "${INTERFACE}" "${VNET_VIRTIF:+ (Host's virtual I/F: $GATEWAY/$MASKLEN)}"
+        fi
     fi
     printf "${COLOR_GREEN}RELEASE: %s${COLOR_RESET}\n" "${RELEASE}"
     echo
@@ -379,8 +391,8 @@ create_jail() {
         fi
     fi
 
-    ## resolv.conf (default: copy from host)
-    if [ ! -f "${bastille_jail_resolv_conf}" ]; then
+    ## resolv.conf (default: copy from host unless VNET_ISOLATED)
+    if [ -z "$VNET_ISOLATED" ] && [ ! -f "${bastille_jail_resolv_conf}" ]; then
         cp -L "${bastille_resolv_conf}" "${bastille_jail_resolv_conf}"
     fi
 
@@ -404,6 +416,7 @@ fi
 THICK_JAIL=""
 VNET_JAIL=""
 VNET_VIRTIF=""
+VNET_ISOLATED=""
 
 ## handle combined options then shift
 if [ "${1}" = "-T" -o "${1}" = "--thick" -o "${1}" = "thick" ] && \
