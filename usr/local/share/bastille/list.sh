@@ -32,7 +32,7 @@
 . /usr/local/etc/bastille/bastille.conf
 
 usage() {
-    echo -e "${COLOR_RED}Usage: bastille list [-j] [release|template|(jail|container)|log|limit|(import|export|backup)].${COLOR_RESET}"
+    echo -e "${COLOR_RED}Usage: bastille list [-j] [release|template|(jail|container)|vnet|log|limit|(import|export|backup)].${COLOR_RESET}"
     exit 1
 }
 
@@ -73,6 +73,9 @@ if [ $# -gt 0 ]; then
                 fi
             done
         fi
+        ;;
+    vnet)
+        ${bastille_sharedir}/vnet list -r
         ;;
     log|logs)
         find "${bastille_logsdir}" -type f -maxdepth 1
