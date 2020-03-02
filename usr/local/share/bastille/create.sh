@@ -32,7 +32,26 @@
 . /usr/local/etc/bastille/bastille.conf
 
 usage() {
-    echo -e "${COLOR_RED}Usage: bastille create [option] name release ip [interface [gateway]].${COLOR_RESET}"
+    echo -e "${COLOR_RED}Usage: bastille create [option] name release ip [rc.conf options].\n" \
+            "       [option]\n" \
+            "       -V|--vnet|vnet: VNET jail\n" \
+            "       -T|--thick|thick: Thick jail\n" \
+            "\n" \
+            "       [ip] comma-separated list of the following syntaxes\n" \
+            "            (addresses can be either IPv4 or IPv6)\n" \
+            "       10.0.0.5: an IP for a standard jail on the default I/F\n" \
+            "       10.0.0.5@em0: an IP for a standard jail on a specified I/F\n" \
+            "       10.0.0.5/24@em0: an IP for a VNET jail bridged to a specified I/F\n" \
+            "       10.0.0.5/24@/vi0=10.0.0.1: an IP for a VNET jail and a virtual I/F\n" \
+            "       10.0.0.5/24@/net0: an IP for a VNET jail on an internal bridged network\n" \
+            "\n" \
+            "       [rc.conf options] comma-separated list of the following syntaxes\n" \
+            "       gw=A.B.C.D|gw=X:X::X:X: default gateways\n" \
+            "       router: IPv4/IPv6 router (forwarding IPv4/IPv6)\n" \
+            "       ipv4router: IPv4 router (forwarding IPv4)\n" \
+            "       ipv6router: IPv6 router (forwarding IPv6)\n" \
+            "       key=value: arbitrary rc.conf variable and its value\n\n" \
+            "${COLOR_RESET}"
     exit 1
 }
 
@@ -46,18 +65,65 @@ running_jail() {
     fi
 }
 
+validate_all_ip() {
+    local ip iplist addr iface ifaddr
+    iplist=$1
+
+    while [ ${#iplist} -gt 0 ]; do
+        case "${iplist}" in
+            *,*)
+                ip=${iplist%%,*}
+                iplist=${iplist#*,}
+                ;;
+            *)
+                ip=$iplist
+                iplist=""
+                ;;
+        esac
+
+        case "${ip}" in
+            *@*)
+                addr="${ip%%@*}"
+                iface="${ip#*@}"
+                case "${iface}" in
+                    *=*)
+                        ifaddr="${iface#*=}"
+                        iface="${iface%%=*}"
+                        ;;
+                    *)
+                        ifaddr=""
+                        ;;
+                esac
+                ;;
+            *)
+                addr=$ip
+                iface=""
+                ifaddr=""
+                ;;
+        esac
+
+        validate_netif $addr $iface $ifaddr
+    done
+}
+
+is_ip6() {
+    local addr=$1
+    echo "${addr}" | grep -qE '^(([a-fA-F0-9:]+$)|([a-fA-F0-9:]+\/[0-9]{1,3}$))' > /dev/null 2>&1
+}
+
 validate_ip() {
-    IPX_ADDR="ip4.addr"
+    local addr=$1
+    local iface=$2
     IP6_MODE="disable"
-    ip6=$(echo "${IP}" | grep -E '^(([a-fA-F0-9:]+$)|([a-fA-F0-9:]+\/[0-9]{1,3}$))')
-    if [ -n "${ip6}" ]; then
-        echo -e "${COLOR_GREEN}Valid: (${ip6}).${COLOR_RESET}"
-        IPX_ADDR="ip6.addr"
+    if is_ip6 "$addr"; then
+        echo -e "${COLOR_GREEN}Valid: (${addr}).${COLOR_RESET}"
+        IP6_ADDR="${IP6_ADDR:+${IP6_ADDR}\n}  ip6.addr ${IP6_ADDR:++}= \"${iface:+$iface|}$addr\";"
         IP6_MODE="new"
+        IP_AF=6
     else
         local IFS
-        if echo "${IP}" | grep -Eq '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))?$'; then
-            TEST_IP=$(echo "${IP}" | cut -d / -f1)
+        if echo "${addr}" | grep -Eq '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))?$'; then
+            TEST_IP=$(echo "${addr}" | cut -d / -f1)
             IFS=.
             set ${TEST_IP}
             for quad in 1 2 3 4; do
@@ -69,53 +135,108 @@ validate_ip() {
             if ifconfig | grep -qw "${TEST_IP}"; then
                 echo -e "${COLOR_YELLOW}Warning: ip address already in use (${TEST_IP}).${COLOR_RESET}"
             else
-                echo -e "${COLOR_GREEN}Valid: (${IP}).${COLOR_RESET}"
+                echo -e "${COLOR_GREEN}Valid: (${addr}).${COLOR_RESET}"
             fi
+            IP4_ADDR="${IP4_ADDR:+${IP4_ADDR}\n}  ip4.addr ${IP4_ADDR:++}= \"${iface:+$iface|}$addr\";"
+            IP_AF=4
         else
-            echo -e "${COLOR_RED}Invalid: (${IP}).${COLOR_RESET}"
+            echo -e "${COLOR_RED}Invalid: (${addr}).${COLOR_RESET}"
             exit 1
         fi
     fi
 }
 
 validate_netif() {
+    local addr=$1
+    local iface=$2
+    local ifaddr=$3
+    local masklen
+    if [ -z "$iface" ] && [ -z "${VNET_JAIL}" ]; then
+        if [ -z "${bastille_jail_loopback}" ] && [ -n "${bastille_jail_external}" ]; then
+            iface=${bastille_jail_external}
+        elif [ -n "${bastille_jail_loopback}" ] && [ -z "${bastille_jail_external}" ]; then
+            iface=${bastille_jail_interface}
+        fi
+        validate_ip $addr $iface
+        return
+    fi
+    validate_ip $addr $iface
     local LIST_INTERFACES=$(ifconfig -l)
-    if echo "${LIST_INTERFACES} VNET" | grep -qwo "${INTERFACE}"; then
-        echo -e "${COLOR_GREEN}Valid: (${INTERFACE}).${COLOR_RESET}"
-    elif [ -n "${VNET_JAIL}" ]; then
-        VNET_VIRTIF="1"
-        if echo "$INTERFACE" | grep -Eq '^@.+' > /dev/null 2>&1; then
-            VNET_ISOLATED="1"
-            INTERFACE="${INTERFACE#@}"
-            echo -e "${COLOR_GREEN}Valid: (Connected to an internal bridge ${INTERFACE}br).${COLOR_RESET}"
+    if echo "${LIST_INTERFACES} VNET" | grep -qwo "${iface}"; then
+        if [ -n "${VNET_JAIL}" ]; then
+            echo -e "${COLOR_GREEN}Valid: (Bridged to ${iface}).${COLOR_RESET}"
+            VNET_ISOLATED=""
+            VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add ${iface} ${iface}_${NAME}\";";
         else
-            echo -e "${COLOR_GREEN}Valid: (a virtual interface ${INTERFACE}).${COLOR_RESET}"
-            MASKLEN=${IP##*/}
-            if [ -z "${GATEWAY}" ]; then
-                echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-                exit 1
-            elif [ -z "${MASKLEN}" ]; then
-                echo -e "${COLOR_RED}Specify a MASKLEN for the IP address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-                exit 1
-            elif [ "${IPX_ADDR}" == "ip4.addr" ] && [ "${MASKLEN}" -le 0 -o "${MASKLEN}" -ge 32 ]; then
-                echo -e "${COLOR_RED}Invalid: 0 < MASKLEN < 32 for the IPv4 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-                exit 1
-            elif [ "${IPX_ADDR}" == "ip6.addr" ] && [ "${MASKLEN}" -ne 64 ]; then
-                echo -e "${COLOR_RED}Invalid: Specify /64 for the IPv6 address $IP (to be assgined to ${INTERFACE}).${COLOR_RESET}"
-                exit 1
+            echo -e "${COLOR_GREEN}Valid: (${iface}).${COLOR_RESET}"
+            IFLIST="${IFLIST:+${IFLIST}\n}${iface}";
+        fi
+    elif [ -z "${VNET_JAIL}" ]; then
+        echo -e "${COLOR_RED}Invalid: (No such interface ${iface}).${COLOR_RESET}"
+        exit 1
+    else
+        if [ -z "${iface}" ]; then
+            echo -e "${COLOR_RED}Specify an interface for the VNET jail address $addr.${COLOR_RESET}"
+            exit 1
+        fi
+        VNET_VIRTIF="1"
+        if echo "$iface" | grep -Eq '^/.+' > /dev/null 2>&1; then
+            iface="${iface#/}"
+            if [ -z "$ifaddr" ]; then
+                echo -e "${COLOR_GREEN}Valid: (Connected to an internal bridge ${iface}br).${COLOR_RESET}"
+                VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -b ${iface} ${iface}_${NAME}\";";
+
+            else
+                echo -e "${COLOR_GREEN}Valid: (a virtual interface ${iface}(${ifaddr})).${COLOR_RESET}"
+                VNET_ISOLATED=""
+                masklen=${addr##*/}
+                if [ -z "${ifaddr}" ]; then
+                    echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${iface}).${COLOR_RESET}"
+                    exit 1
+                elif [ -z "${masklen}" ]; then
+                    echo -e "${COLOR_RED}Specify a masklen for the IP address $IP (to be assgined to ${iface}).${COLOR_RESET}"
+                    exit 1
+                elif [ "${IP_AF}" == "4" ]; then
+                    if [ "${masklen}" -le 0 -o "${masklen}" -ge 32 ]; then
+                        echo -e "${COLOR_RED}Invalid: 0 < masklen < 32 for the IPv4 address $IP (to be assgined to ${iface}).${COLOR_RESET}"
+                        exit 1
+                    else
+                        VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -4 $ifaddr/$masklen ${iface} ${iface}_${NAME}\";";
+                    fi
+                elif [ "${IP_AF}" == "6" ]; then
+                    if [ "${masklen}" -ne 64 ]; then
+                        echo -e "${COLOR_RED}Invalid: Specify /64 for the IPv6 address $IP (to be assgined to ${iface}).${COLOR_RESET}"
+                        exit 1
+                    else
+                        VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -6 $ifaddr/$masklen ${iface} ${iface}_${NAME}\";";
+                    fi
+                fi
             fi
         fi
-    else
-        echo -e "${COLOR_RED}Invalid: (No such interface ${INTERFACE}).${COLOR_RESET}"
-        exit 1
+    fi
+
+    if [ -n "${VNET_JAIL}" ]; then
+        if [ "${IP_AF}" == "4" ]; then
+            if [ "${addr}" == "0.0.0.0" ]; then
+                RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}=\"SYNCDHCP\""
+            else
+                RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}=\"inet $addr\""
+            fi
+        elif [ "${IP_AF}" == "6" ]; then
+            if echo "${addr}" | grep -Eq '^[0:]+$' > /dev/null 2>&1; then
+                RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}_ipv6=\"inet6 accept_rtadv\""
+            else
+                RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}_ipv6=\"inet6 $addr\""
+            fi
+        fi
+
+        IFLIST="${IFLIST:+${IFLIST}\n}${iface}_${NAME}";
+        VNET_PRESTOP="${VNET_PRESTOP:+${VNET_PRESTOP}\n}  exec.prestop  += \"ifconfig ${iface}_${NAME} -vnet ${NAME}\";";
+        VNET_POSTSTOP="${VNET_POSTSTOP:+${VNET_POSTSTOP}\n}  exec.poststop += \"${bastille_sharedir}/vnet delete ${iface} ${iface}_${NAME}\";"
     fi
 }
 
 validate_netconf() {
-    if [ -n "${VNET_JAIL}" ] && [ -z "${INTERFACE}" ]; then
-        echo -e "${COLOR_RED}Specify an external interface for a VNET jail.${COLOR_RESET}"
-        exit 1
-    fi
     if [ -n "${bastille_jail_loopback}" ] && [ -n "${bastille_jail_interface}" ] && [ -n "${bastille_jail_external}" ]; then
         echo -e "${COLOR_RED}Invalid network configuration.${COLOR_RESET}"
         exit 1
@@ -160,27 +281,14 @@ ${NAME} {
   path = ${bastille_jail_path};
   securelevel = 2;
 
-  interface = ${bastille_jail_conf_interface};
-  ${IPX_ADDR} = ${IP};
+${IP4_ADDR_LINES:+$IP4_ADDR_LINES}
+${IP6_ADDR_LINES:+$IP6_ADDR_LINES}
   ip6 = ${IP6_MODE};
 }
 EOF
 }
 
 generate_vnet_jail_conf() {
-    local vnetif="${INTERFACE}_${NAME}"
-
-    local vnetopts=""
-    if [ -n "${VNET_VIRTIF}" ]; then
-        if [ -n "${VNET_ISOLATED}" ]; then
-            vnetopts="-b"
-        elif [ "${IPX_ADDR}" == "ip4.addr" ]; then
-            vnetopts="-4 ${GATEWAY}/${MASKLEN}"
-        elif [ "${IPX_ADDR}" == "ip6.addr" ]; then
-            vnetopts="-6 ${GATEWAY}/${MASKLEN}"
-        fi
-    fi
-
     ## generate config
     cat << EOF > "${bastille_jail_conf}"
 ${NAME} {
@@ -197,12 +305,12 @@ ${NAME} {
   securelevel = 2;
 
   vnet;
-  vnet.interface = "${vnetif}";
-  exec.prestart += "${bastille_sharedir}/vnet add ${vnetopts} ${INTERFACE} ${vnetif}";
+  vnet.interface = ${JAIL_INTERFACES};
+${VNET_PRESTART_LINES}
   # workaround
   # https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=238326
-  exec.prestop  += "ifconfig ${vnetif} -vnet ${NAME}";
-  exec.poststop += "${bastille_sharedir}/vnet delete ${INTERFACE} ${vnetif}";
+${VNET_PRESTOP_LINES}
+${VNET_POSTSTOP_LINES}
 }
 EOF
 }
@@ -256,16 +364,6 @@ create_jail() {
     fi
 
     if [ ! -f "${bastille_jail_conf}" ]; then
-        if [ -z "${bastille_jail_loopback}" ] && [ -n "${bastille_jail_external}" ]; then
-            local bastille_jail_conf_interface=${bastille_jail_external}
-        fi
-        if [ -n "${bastille_jail_loopback}" ] && [ -z "${bastille_jail_external}" ]; then
-            local bastille_jail_conf_interface=${bastille_jail_interface}
-        fi
-        if [ -n "${INTERFACE}" ]; then
-            local bastille_jail_conf_interface=${INTERFACE}
-        fi
-
         ## generate the jail configuration file 
         if [ -n "${VNET_JAIL}" ]; then
             generate_vnet_jail_conf
@@ -280,15 +378,8 @@ create_jail() {
     echo
     printf "${COLOR_GREEN}NAME: %s%s${COLOR_RESET}\n" "${NAME}" "${VNET_JAIL:+ (VNET)}"
     printf "${COLOR_GREEN}IP: %s${COLOR_RESET}\n" "${IP}"
-    if [ -n  "${GATEWAY}" ]; then
-        printf "${COLOR_GREEN}GATEWAY: %s${COLOR_RESET}\n" "${GATEWAY}"
-    fi
-    if [ -n  "${INTERFACE}" ]; then
-        if [ -n "${VNET_ISOLATED}" ]; then
-            printf "${COLOR_GREEN}INTERNAL BRIDGE: %sbr${COLOR_RESET}\n" "${INTERFACE}"
-        else
-            printf "${COLOR_GREEN}INTERFACE: %s%s${COLOR_RESET}\n" "${INTERFACE}" "${VNET_VIRTIF:+ (Host's virtual I/F: $GATEWAY/$MASKLEN)}"
-        fi
+    if [ -n  "${OPTIONS}" ]; then
+        printf "${COLOR_GREEN}OPTIONS: %s${COLOR_RESET}\n" "${OPTIONS}"
     fi
     printf "${COLOR_GREEN}RELEASE: %s${COLOR_RESET}\n" "${RELEASE}"
     echo
@@ -374,25 +465,56 @@ create_jail() {
             ## if 0.0.0.0 set SYNCDHCP(IPv4)
             ## else if :: use SLAAC(IPv6)
             ## else set static IPv4 or IPv6 address
-            if [ "${IP}" == "0.0.0.0" ]; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}="SYNCDHCP"
-            elif echo "${IP}" | grep -Eq '^[0:]+$' > /dev/null 2>&1; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}_ipv6="inet6 accept_rtadv"
-            elif [ "${IPX_ADDR}" == "ip4.addr" ]; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}="inet ${IP}"
-            elif [ "${IPX_ADDR}" == "ip6.addr" ]; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ifconfig_${INTERFACE}_${NAME}_ipv6="inet6 ${IP}"
-            fi
+            echo $RC_CONF_LINES | xargs -n1 /usr/sbin/sysrc -f "${bastille_jail_rc_conf}"
 
-            ## Add default route if GATEWAY is specified
-            if [ -n "${GATEWAY}" ]; then
-                /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" defaultrouter="${GATEWAY}"
-            fi
+            ## Add default route and/or other options in jails rc.conf.
+            local opt gwaddr key value
+            local optlist="${OPTIONS}"
+            while [ ${#optlist} -gt 0 ]; do
+                case "${optlist}" in
+                    *,*)
+                        opt=${optlist%%,*}
+                        optlist=${optlist#*,}
+                        ;;
+                    *)
+                        opt=$optlist
+                        optlist=""
+                        ;;
+                esac
+                case "${opt}" in
+                    gw=*|gateway=*)
+                        gwaddr=${opt#*=}
+                        if is_ip6 $gwaddr; then
+                            /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ipv6_defaultrouter="${gwaddr}"
+                        else
+                            /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" defaultrouter="${gwaddr}"
+                        fi
+                        ;;
+                    router)
+                        /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" gateway_enable=YES
+                        /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ipv6_gateway_enable=YES
+                        ;;
+                    ipv4router)
+                        /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" gateway_enable=YES
+                        ;;
+                    ipv6router)
+                        /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ipv6_gateway_enable=YES
+                        ;;
+                    *=*)
+                        key=${opt%%=*}
+                        value=${opt#*=}
+                        value=$(echo $value | sed 's/"/\\"/g')
+                        /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" $key="$value"
+                        ;;
+                esac
+            done
         fi
     fi
 
     ## resolv.conf (default: copy from host unless VNET_ISOLATED)
-    if [ -z "$VNET_ISOLATED" ] && [ ! -f "${bastille_jail_resolv_conf}" ]; then
+    if [ -n "$VNET_ISOLATED" ]; then
+        echo -e "${COLOR_YELLOW}Isolated. Not going to copy resolv.conf from the host.${COLOR_RESET}"
+    elif [ ! -f "${bastille_jail_resolv_conf}" ]; then
         cp -L "${bastille_resolv_conf}" "${bastille_jail_resolv_conf}"
     fi
 
@@ -416,7 +538,12 @@ fi
 THICK_JAIL=""
 VNET_JAIL=""
 VNET_VIRTIF=""
-VNET_ISOLATED=""
+VNET_ISOLATED="1"
+VNET_PRESTART=""
+VNET_PRESTOP=""
+VNET_POSTSTOP=""
+IFLIST=""
+RC_CONF=""
 
 ## handle combined options then shift
 if [ "${1}" = "-T" -o "${1}" = "--thick" -o "${1}" = "thick" ] && \
@@ -445,11 +572,9 @@ fi
 NAME="$1"
 RELEASE="$2"
 IP="$3"
-INTERFACE="$4"
-GATEWAY="$5"
-MASKLEN=""
+OPTIONS="$4"
 
-if [ $# -gt 5 ] || [ $# -lt 3 ]; then
+if [ $# -gt 4 ] || [ $# -lt 3 ]; then
     usage
 fi
 
@@ -516,16 +641,26 @@ fi
 
 ## check if ip address is valid
 if [ -n "${IP}" ]; then
-    validate_ip
+    validate_all_ip "$IP"
 else
     usage
 fi
+VNET_PRESTART_LINES=$(echo -e "$VNET_PRESTART" | sort | uniq)
+VNET_PRESTOP_LINES=$(echo -e "$VNET_PRESTOP" | sort | uniq)
+VNET_POSTSTOP_LINES=$(echo -e "$VNET_POSTSTOP" | sort | uniq)
+JAIL_INTERFACES=$(echo $(echo -e "$IFLIST" | sort | uniq) | tr " " ",")
+IP4_ADDR_LINES=$(echo -e "$IP4_ADDR")
+IP6_ADDR_LINES=$(echo -e "$IP6_ADDR")
+RC_CONF_LINES=$(echo -e "$RC_CONF")
 
-## check if interface is valid
-if [ -n  "${INTERFACE}" ]; then
-    validate_netif
+if [ -n "${VNET_JAIL}" ]; then
+    if [ -z "${JAIL_INTERFACES}" ]; then
+        echo -e "${COLOR_RED}Specify interfaces or networks for VNET jails.${COLOR_RESET}"
+        exit 1
+    fi
 else
     validate_netconf
+    VNET_ISOLATED=""
 fi
 
-create_jail "${NAME}" "${RELEASE}" "${IP}" "${INTERFACE}"
+create_jail
