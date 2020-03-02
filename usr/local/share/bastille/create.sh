@@ -157,8 +157,6 @@ validate_netif() {
         elif [ -n "${bastille_jail_loopback}" ] && [ -z "${bastille_jail_external}" ]; then
             iface=${bastille_jail_interface}
         fi
-        validate_ip $addr $iface
-        return
     fi
     validate_ip $addr $iface
     local LIST_INTERFACES=$(ifconfig -l)
