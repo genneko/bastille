@@ -106,51 +106,84 @@ validate_all_ip() {
     done
 }
 
+is_ip6_wo_masklen() {
+    local addr=$1
+    echo "${addr}" | grep -qE '^[a-fA-F0-9:]+$' > /dev/null 2>&1
+}
+
+is_ip4_wo_masklen() {
+    local addr=$1
+    echo "${addr}" | grep -qE '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$' > /dev/null 2>&1
+}
+
 is_ip6() {
     local addr=$1
     echo "${addr}" | grep -qE '^(([a-fA-F0-9:]+$)|([a-fA-F0-9:]+\/[0-9]{1,3}$))' > /dev/null 2>&1
 }
 
+is_ip4() {
+    local addr=$1
+    echo "${addr}" | grep -qE '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))?$' > /dev/null 2>&1
+}
+
+get_masklen() {
+    local addr=$1
+    if echo "$addr" | grep -q / > /dev/null 2>&1; then
+        echo "${addr##*/}"
+    else
+        echo ""
+    fi
+}
+
+validate_masklen() {
+    local masklen=$1
+    local af=$2
+    if [ -z "${masklen}" ]; then
+        return 0
+    elif [ "${af}" == "4" ]; then
+        if [ "${masklen}" -le 0 -o "${masklen}" -gt 32 ]; then
+            return 1
+        fi
+    elif [ "${af}" == "6" ]; then
+        if [ "${masklen}" -le 0 -o "${masklen}" -gt 128 ]; then
+            return 1
+        fi
+    else
+        # Cannot determine address family
+        return 2
+    fi
+    return 0
+}
+
 validate_ip() {
     local addr=$1
-    local iface=$2
-    IP6_MODE="disable"
+    local masklen=$(get_masklen $addr)
     if is_ip6 "$addr"; then
-        echo -e "${COLOR_GREEN}Valid: (${addr}).${COLOR_RESET}"
-        IP6_ADDR="${IP6_ADDR:+${IP6_ADDR}\n}  ip6.addr ${IP6_ADDR:++}= \"${iface:+$iface|}$addr\";"
-        IP6_MODE="new"
-        IP_AF=6
-    else
-        local IFS
-        if echo "${addr}" | grep -Eq '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))?$'; then
-            TEST_IP=$(echo "${addr}" | cut -d / -f1)
-            IFS=.
-            set ${TEST_IP}
-            for quad in 1 2 3 4; do
-                if eval [ \$$quad -gt 255 ]; then
-                    echo "Invalid: (${TEST_IP})"
-                    exit 1
-                fi
-            done
-            if ifconfig | grep -qw "${TEST_IP}"; then
-                echo -e "${COLOR_YELLOW}Warning: ip address already in use (${TEST_IP}).${COLOR_RESET}"
-            else
-                echo -e "${COLOR_GREEN}Valid: (${addr}).${COLOR_RESET}"
-            fi
-            IP4_ADDR="${IP4_ADDR:+${IP4_ADDR}\n}  ip4.addr ${IP4_ADDR:++}= \"${iface:+$iface|}$addr\";"
-            IP_AF=4
-        else
-            echo -e "${COLOR_RED}Invalid: (${addr}).${COLOR_RESET}"
-            exit 1
+        if ! validate_masklen "$masklen" "6"; then
+            echo "$addr: IPv6 masklen out of range 1..128"
+            return 1
         fi
+        echo "6"
+    elif is_ip4 "$addr"; then
+        if ! validate_masklen "$masklen" "4"; then
+            echo "$addr: IPv4 masklen out of range 1..32"
+            return 1
+        fi
+        echo "4"
+    else
+        echo "$addr"
+        return 1
     fi
+    return 0
 }
 
 validate_netif() {
     local addr=$1
     local iface=$2
     local ifaddr=$3
-    local masklen
+    local af ifaddraf
+    # For a standard jail, use the interface specified in the config file
+    # when the one is not specified on a command line's IP argument.
     if [ -z "$iface" ] && [ -z "${VNET_JAIL}" ]; then
         if [ -z "${bastille_jail_loopback}" ] && [ -n "${bastille_jail_external}" ]; then
             iface=${bastille_jail_external}
@@ -158,9 +191,26 @@ validate_netif() {
             iface=${bastille_jail_interface}
         fi
     fi
-    validate_ip $addr $iface
+    # Exit if the address is invalid.
+    af=$(validate_ip $addr)
+    if [ "$af" == "6" ]; then
+        echo -e "${COLOR_GREEN}Valid: (${addr}).${COLOR_RESET}"
+        IP6_ADDR="${IP6_ADDR:+${IP6_ADDR}\n}  ip6.addr ${IP6_ADDR:++}= \"${iface:+$iface|}$addr\";"
+        IP6_MODE="new"
+    elif [ "$af" == "4" ]; then
+        if ifconfig | grep -qw "${addr%%/*}"; then
+            echo -e "${COLOR_YELLOW}Warning: ip address already in use (${addr%%/*}).${COLOR_RESET}"
+        else
+            echo -e "${COLOR_GREEN}Valid: (${addr}).${COLOR_RESET}"
+        fi
+        IP4_ADDR="${IP4_ADDR:+${IP4_ADDR}\n}  ip4.addr ${IP4_ADDR:++}= \"${iface:+$iface|}$addr\";"
+    else
+        echo -e "${COLOR_RED}Invalid: $af${COLOR_RESET}"
+        exit 1
+    fi
     local LIST_INTERFACES=$(ifconfig -l)
     if echo "${LIST_INTERFACES} VNET" | grep -qwo "${iface}"; then
+        # Using an existing interface.
         if [ -n "${VNET_JAIL}" ]; then
             echo -e "${COLOR_GREEN}Valid: (Bridged to ${iface}).${COLOR_RESET}"
             VNET_ISOLATED=""
@@ -170,57 +220,53 @@ validate_netif() {
             IFLIST="${IFLIST:+${IFLIST}\n}${iface}";
         fi
     elif [ -z "${VNET_JAIL}" ]; then
+        # A standard jail requires an existing interface.
         echo -e "${COLOR_RED}Invalid: (No such interface ${iface}).${COLOR_RESET}"
         exit 1
     else
+        # A VNET jail can use a virtual interface.
         if [ -z "${iface}" ]; then
             echo -e "${COLOR_RED}Specify an interface for the VNET jail address $addr.${COLOR_RESET}"
             exit 1
         fi
-        VNET_VIRTIF="1"
-        if echo "$iface" | grep -Eq '^/.+' > /dev/null 2>&1; then
+        # A virtual interface name must be specified with a prefix '/'.
+        if ! echo "$iface" | grep -Eq '^/.+' > /dev/null 2>&1; then
+            echo -e "${COLOR_RED}Prefix a virtual interface with '/'.${COLOR_RESET}"
+            exit 1
+        else
+            VNET_VIRTIF="1"
             iface="${iface#/}"
             if [ -z "$ifaddr" ]; then
                 echo -e "${COLOR_GREEN}Valid: (Connected to an internal bridge ${iface}br).${COLOR_RESET}"
                 VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -b ${iface} ${iface}_${NAME}\";";
 
             else
-                echo -e "${COLOR_GREEN}Valid: (a virtual interface ${iface}(${ifaddr})).${COLOR_RESET}"
                 VNET_ISOLATED=""
-                masklen=${addr##*/}
-                if [ -z "${ifaddr}" ]; then
-                    echo -e "${COLOR_RED}Specify a gateway (to be assgined to ${iface}).${COLOR_RESET}"
+                ifaddraf=$(validate_ip $ifaddr)
+                if [ "$af" == "4" ] && [ "$ifaddraf" == "4" ]; then
+                    VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -4 $ifaddr ${iface} ${iface}_${NAME}\";";
+                elif [ "$af" == "6" ] && [ "$ifaddraf" == "6" ]; then
+                    VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -6 $ifaddr ${iface} ${iface}_${NAME}\";";
+                elif [ "$af" == "4" -o "$af" == "6" ] && [ "$ifaddraf" == "6" -o "$ifaddraf" == "4" ]; then
+                    echo -e "${COLOR_RED}Invalid: address family mismatch ($addr vs $ifaddr)${COLOR_RESET}"
                     exit 1
-                elif [ -z "${masklen}" ]; then
-                    echo -e "${COLOR_RED}Specify a masklen for the IP address $IP (to be assgined to ${iface}).${COLOR_RESET}"
+                else
+                    echo -e "${COLOR_RED}Invalid: $ifaddraf${COLOR_RESET}"
                     exit 1
-                elif [ "${IP_AF}" == "4" ]; then
-                    if [ "${masklen}" -le 0 -o "${masklen}" -ge 32 ]; then
-                        echo -e "${COLOR_RED}Invalid: 0 < masklen < 32 for the IPv4 address $IP (to be assgined to ${iface}).${COLOR_RESET}"
-                        exit 1
-                    else
-                        VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -4 $ifaddr/$masklen ${iface} ${iface}_${NAME}\";";
-                    fi
-                elif [ "${IP_AF}" == "6" ]; then
-                    if [ "${masklen}" -ne 64 ]; then
-                        echo -e "${COLOR_RED}Invalid: Specify /64 for the IPv6 address $IP (to be assgined to ${iface}).${COLOR_RESET}"
-                        exit 1
-                    else
-                        VNET_PRESTART="${VNET_PRESTART:+${VNET_PRESTART}\n}  exec.prestart += \"${bastille_sharedir}/vnet add -6 $ifaddr/$masklen ${iface} ${iface}_${NAME}\";";
-                    fi
                 fi
+                echo -e "${COLOR_GREEN}Valid: (a virtual interface ${iface} (${ifaddr})).${COLOR_RESET}"
             fi
         fi
     fi
 
     if [ -n "${VNET_JAIL}" ]; then
-        if [ "${IP_AF}" == "4" ]; then
+        if [ "$af" == "4" ]; then
             if [ "${addr}" == "0.0.0.0" ]; then
                 RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}=\"SYNCDHCP\""
             else
                 RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}=\"inet $addr\""
             fi
-        elif [ "${IP_AF}" == "6" ]; then
+        elif [ "$af" == "6" ]; then
             if echo "${addr}" | grep -Eq '^[0:]+$' > /dev/null 2>&1; then
                 RC_CONF="${RC_CONF:+${RC_CONF}\n}ifconfig_${iface}_${NAME}_ipv6=\"inet6 accept_rtadv\""
             else
@@ -482,10 +528,12 @@ create_jail() {
                 case "${opt}" in
                     gw=*|gateway=*)
                         gwaddr=${opt#*=}
-                        if is_ip6 $gwaddr; then
+                        if is_ip6_wo_masklen $gwaddr; then
                             /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" ipv6_defaultrouter="${gwaddr}"
-                        else
+                        elif is_ip4_wo_masklen $gwaddr; then
                             /usr/sbin/sysrc -f "${bastille_jail_rc_conf}" defaultrouter="${gwaddr}"
+                        else
+                            echo -e "${COLOR_YELLOW}Invalid gw=$gwaddr. Skip it.${COLOR_RESET}"
                         fi
                         ;;
                     router)
@@ -542,6 +590,7 @@ VNET_PRESTOP=""
 VNET_POSTSTOP=""
 IFLIST=""
 RC_CONF=""
+IP6_MODE="disable"
 
 ## handle combined options then shift
 if [ "${1}" = "-T" -o "${1}" = "--thick" -o "${1}" = "thick" ] && \
