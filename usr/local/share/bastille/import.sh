@@ -140,14 +140,14 @@ generate_config() {
     if [ "${FILE_EXT}" = ".zip" ]; then
         # Gather some bits from foreign/iocage config files
         JSON_CONFIG="${bastille_jailsdir}/${TARGET_TRIM}/config.json"
-        if [ -f "${JSON_CONFIG}" ]; then
+        if [ -n "${JSON_CONFIG}" ]; then
             IPV4_CONFIG=$(grep -wo '\"ip4_addr\": \".*\"' "${JSON_CONFIG}" | tr -d '" ' | sed 's/ip4_addr://')
             IPV6_CONFIG=$(grep -wo '\"ip6_addr\": \".*\"' "${JSON_CONFIG}" | tr -d '" ' | sed 's/ip6_addr://')
         fi
     elif [ "${FILE_EXT}" = ".tar.gz" ]; then
         # Gather some bits from foreign/ezjail config files
         PROP_CONFIG="${bastille_jailsdir}/${TARGET_TRIM}/prop.ezjail-${FILE_TRIM}-*"
-        if [ -f "${PROP_CONFIG}" ]; then
+        if [ -n "${PROP_CONFIG}" ]; then
             IPVX_CONFIG=$(grep -wo "jail_${TARGET_TRIM}_ip=.*" ${PROP_CONFIG} | tr -d '" ' | sed "s/jail_${TARGET_TRIM}_ip=//")
         fi
     fi
@@ -274,10 +274,10 @@ workout_components() {
 
 config_netif() {
     # Get interface from bastille configuration
-    if [ -n "${bastille_jail_interface}" ]; then
-        NETIF_CONFIG="${bastille_jail_interface}"
-    elif [ -n "${bastille_jail_external}" ]; then
-        NETIF_CONFIG="${bastille_jail_external}"
+    if [ -n "${bastille_network_loopback}" ]; then
+        NETIF_CONFIG="${bastille_network_loopback}"
+    elif [ -n "${bastille_network_shared}" ]; then
+        NETIF_CONFIG="${bastille_network_shared}"
     else
         NETIF_CONFIG=
     fi
